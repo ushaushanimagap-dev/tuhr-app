@@ -1,0 +1,136 @@
+name: APK yigish
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Loyiha tuzilmasini yaratish
+        run: |
+          mkdir -p www assets
+          mv index.html www/index.html
+          if [ -f icon.png ]; then cp icon.png assets/icon.png; fi
+          cat > package.json <<'JSON'
+          {
+            "name": "tuhr",
+            "version": "1.0.0",
+            "private": true,
+            "dependencies": {
+              "@capacitor/android": "^7.0.0",
+              "@capacitor/app": "^7.0.0",
+              "@capacitor/core": "^7.0.0"
+            },
+            "devDependencies": {
+              "@capacitor/assets": "^3.0.5",
+              "@capacitor/cli": "^7.0.0"
+            }
+          }
+          JSON
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "uz.tuhr.app",
+            "appName": "Туҳр",
+            "webDir": "www",
+            "server": { "androidScheme": "https" },
+            "android": { "backgroundColor": "#FFF5F8" }
+          }
+          JSON
+          cat > bundle-fonts.mjs <<'MJS'
+          import { readFile, writeFile, mkdir } from 'node:fs/promises';
+          const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36';
+          const html = await readFile('www/index.html', 'utf8');
+          const m = html.match(/<link rel="stylesheet" href="(https:\/\/fonts\.googleapis\.com\/css2[^"]+)">/);
+          if (!m) { console.log('Shrift havolasi topilmadi.'); process.exit(0); }
+          const css = await (await fetch(m[1].replace(/&amp;/g, '&'), { headers: { 'User-Agent': UA } })).text();
+          await mkdir('www/fonts', { recursive: true });
+          const urls = [...new Set([...css.matchAll(/url\((https:\/\/[^)]+)\)/g)].map(x => x[1]))];
+          let out = css, n = 0;
+          for (const u of urls) {
+            const name = u.split('/').pop().split('?')[0];
+            const buf = Buffer.from(await (await fetch(u, { headers: { 'User-Agent': UA } })).arrayBuffer());
+            await writeFile('www/fonts/' + name, buf);
+            out = out.split(u).join(name);
+            n++;
+          }
+          await writeFile('www/fonts/fonts.css', out);
+          await writeFile('www/index.html', html.replace(m[0], '<link rel="stylesheet" href="fonts/fonts.css">'));
+          console.log('Joylashtirildi: ' + n + ' ta shrift fayli.');
+          MJS
+          ls -la
+
+      - name: Kutubxonalarni ornatish
+        run: npm install --no-audit --no-fund
+
+      - name: Shriftlarni ilova ichiga joylash
+        continue-on-error: true
+        run: node bundle-fonts.mjs
+
+      - name: Android loyihasini yaratish
+        run: npx cap add android
+
+      - name: Ikonkalarni yasash
+        continue-on-error: true
+        run: npx @capacitor/assets generate --android
+
+      - name: Fayllarni koshirish
+        run: npx cap sync android
+
+      - name: Versiya raqamini qo'yish
+        run: |
+          G=android/app/build.gradle
+          sed -i "s/versionCode 1$/versionCode ${{ github.run_number }}/" $G
+          sed -i "s/versionName \"1.0\"/versionName \"1.0.${{ github.run_number }}\"/" $G
+          printf '\nandroid {\n    lint {\n        checkReleaseBuilds false\n        abortOnError false\n    }\n}\n' >> $G
+          grep -n 'versionCode\|versionName' $G
+
+      - name: Kalit borligini tekshirish
+        env:
+          KS: ${{ secrets.TUHR_KEYSTORE_B64 }}
+          PW: ${{ secrets.TUHR_KEYSTORE_PASS }}
+        run: |
+          if [ -z "$KS" ] || [ -z "$PW" ]; then
+            echo "::error::TUHR_KEYSTORE_B64 yoki TUHR_KEYSTORE_PASS maxfiy qiymati topilmadi (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      - name: APK yigish
+        run: |
+          chmod +x android/gradlew
+          cd android && ./gradlew assembleRelease --no-daemon
+
+      - name: APK ni doimiy kalit bilan imzolash
+        env:
+          KS: ${{ secrets.TUHR_KEYSTORE_B64 }}
+          PW: ${{ secrets.TUHR_KEYSTORE_PASS }}
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT="$SDK/build-tools/$(ls "$SDK/build-tools" | sort -V | tail -1)"
+          echo "$KS" | base64 -d > "$RUNNER_TEMP/tuhr.jks"
+          IN=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          OUT="tuhr-1.0.${{ github.run_number }}.apk"
+          "$BT/zipalign" -p -f 4 "$IN" aligned.apk
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/tuhr.jks" --ks-key-alias tuhr --ks-pass env:PW --key-pass env:PW --out "$OUT" aligned.apk
+          rm -f "$RUNNER_TEMP/tuhr.jks" aligned.apk
+          "$BT/apksigner" verify --print-certs "$OUT"
+
+      - name: APK ni saqlash
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuhr-apk-1.0.${{ github.run_number }}
+          path: tuhr-*.apk
+          if-no-files-found: error
