@@ -1,0 +1,262 @@
+name: Tuhr yigish v3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Samarkand
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Eng yangi sahifani tanlash
+        run: |
+          # Planshet faylni index-2.html kabi nomlasa ham, oxirgi yuklangan .html olinadi
+          SRC=""; BEST=-1
+          for f in *.html; do
+            [ -f "$f" ] || continue
+            T=$(git log -1 --format=%ct -- "$f"); T=${T:-0}
+            if [ "$T" -ge "$BEST" ]; then BEST=$T; SRC="$f"; fi
+          done
+          if [ -z "$SRC" ]; then echo "::error::Omborda .html fayli topilmadi."; exit 1; fi
+          echo "Tanlangan sahifa: $SRC"
+          mkdir -p www assets
+          cp "$SRC" www/index.html
+          if [ -f icon.png ]; then cp icon.png assets/icon.png; cp icon.png assets/logo.png; fi
+
+      - name: Hisoblash mantiqini tekshirish
+        run: |
+          cat > hz-test.mjs <<'MJS'
+          // «Туҳр» ҳисоблаш мантиқи тести: HZ.compute ва HZ.timeline натижалари
+          // олдиндан сақланган «олтин» намуналар билан солиштирилади.
+          // Ишлатиш:  node hz-test.mjs index.html            -> текшириш
+          //           node hz-test.mjs index.html --write    -> янги намуналарни чиқариш
+          process.env.TZ = 'Asia/Samarkand';   // намуналар Самарқанд вақтида ёзилган
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+
+          const file = process.argv[2] || 'index.html';
+          const html = readFileSync(file, 'utf8');
+          const a = html.indexOf('const HZ = (function(){');
+          const b = html.indexOf('if(typeof module!==\'undefined\') module.exports=HZ;', a);
+          if (a < 0 || b < 0) { console.error('HZ модули топилмади'); process.exit(2); }
+          const HZ = new Function(html.slice(a, b) + '\nreturn HZ;')();
+
+          const DAY = 864e5;
+          function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+          const R = rng(20260921);
+          const pick = arr => arr[Math.floor(R() * arr.length)];
+          const between = (x, y, step) => Math.round((x + R() * (y - x)) / step) * step;
+
+          function makeCase(i) {
+            const t0 = Date.UTC(2025, 0, 1, 8);
+            const mode = R() < 0.75 ? 'h' : 'n';
+            const who = R() < 0.5 ? 'm' : 'o';
+            const H = who === 'o' ? between(3, 10, 0.5) * DAY : 0;
+            const T = who === 'o' ? between(15, 60, 1) * DAY : 0;
+            const N = R() < 0.5 ? between(5, 40, 1) * DAY : 0;
+            const anchor = who === 'o' && R() < 0.7 ? t0 - between(1, 40, 1) * DAY : NaN;
+            const preg = mode === 'h' && R() < 0.08;
+            const n = 1 + Math.floor(R() * 5), blood = [];
+            let cur = t0;
+            for (let k = 0; k < n; k++) {
+              const len = between(0.25, pick([3, 8, 14, 45]), 0.25) * DAY;
+              blood.push([cur, cur + len]);
+              cur += len + between(0.5, pick([5, 16, 40]), 0.5) * DAY;
+            }
+            return { mode, who, H, T, N, anchor, preg, blood, ongoing: R() < 0.2 };
+          }
+
+          // Қўлда танланган аниқ ҳолатлар (рисоладаги асосий қоидалар)
+          const fixed = [
+            { mode:'h', who:'m', H:0, T:0, N:0, anchor:NaN, preg:false, blood:[[0, 5*DAY]], ongoing:false },
+            { mode:'h', who:'m', H:0, T:0, N:0, anchor:NaN, preg:false, blood:[[0, 2*DAY]], ongoing:false },
+            { mode:'h', who:'m', H:0, T:0, N:0, anchor:NaN, preg:false, blood:[[0, 12*DAY]], ongoing:false },
+            { mode:'h', who:'o', H:5*DAY, T:25*DAY, N:0, anchor:-30*DAY, preg:false, blood:[[0, 13*DAY]], ongoing:false },
+            { mode:'h', who:'o', H:7*DAY, T:20*DAY, N:0, anchor:-27*DAY, preg:false, blood:[[0, 3*DAY],[6*DAY, 9*DAY]], ongoing:false },
+            { mode:'n', who:'m', H:0, T:0, N:0, anchor:NaN, preg:false, blood:[[0, 45*DAY]], ongoing:false },
+            { mode:'n', who:'o', H:6*DAY, T:24*DAY, N:30*DAY, anchor:NaN, preg:false, blood:[[0, 35*DAY]], ongoing:false },
+            { mode:'h', who:'o', H:5*DAY, T:25*DAY, N:0, anchor:NaN, preg:true, blood:[[0, 4*DAY]], ongoing:false },
+          ];
+          const cases = [...fixed, ...Array.from({ length: 240 }, (_, i) => makeCase(i))];
+
+          function run(inp) {
+            try {
+              const r = HZ.compute(JSON.parse(JSON.stringify(inp), (k, v) => v === null && k === 'anchor' ? NaN : v));
+              let tl = null; try { if (HZ.timeline && r && r.hk) tl = HZ.timeline(inp.blood, r.hk, Math.max(...inp.blood.map(x => x[1]))); } catch (e) { tl = 'ERR:' + e.message; }
+              return JSON.stringify({ r, tl });
+            } catch (e) { return 'THROW:' + e.message; }
+          }
+          const hash = s => createHash('sha256').update(s).digest('hex').slice(0, 16);
+          const got = cases.map(c => hash(run(c)));
+
+          if (process.argv.includes('--write')) { console.log(JSON.stringify(got)); process.exit(0); }
+
+          const GOLD = ["0f4aa341ac79404b","05366c4f76c5ba73","0322de5daf62b320","13a7bece66cc6ff4","4d7a0fc705366ff9","5ba92e110c2d6eaa","8bc193e9417c734c","c5c8386cc2d8ae13","e5d881a5725c8c0b","37a4fd5620ceb78b","0f6ffb2139035c5c","b002a25cb33ab24b","a7cc77334120f9d1","2257780aac63ce87","e83b58747b6a8e96","671634b67172b8b8","b85614a23e27e975","0d0a1ff170ccd4fa","f4107a3b0a2166bf","5dadabba84cbd1fd","98b326fc6969a47c","05939f1cc8bbd1cb","ff0d4e120b02dd80","4f10bc311df17e47","5f6e7fee2033d8e5","61e9839e76d620f1","aa547e6e43121531","eb24f6e4a140d8d0","42c28917a16d7f2c","b0045bf7488de5f2","d846e97a48a793ce","6ef3f75473560ab4","d154bef1b99c86a1","3673ac14197c05f4","dada360a65fb2d5b","a23eb956dd531a8b","5ae1bf27bd94b659","13fbfab3f7bacb76","1853eedb00426438","0a83b372ca5872ee","7a5ccaedc792e94e","520068d355c72a4f","a55be744d71aeeb5","770e803b8414f7cd","2ef3eb4133123f0e","8d0f0765808af011","e4b78b03cbd88195","8af54f1a009adb47","4324be6c00caba00","65def93831b1a2fc","217fd1ded6f74555","edc7047c701689e0","0ab5ad04817ca494","7af47706b6895450","5a668f0df2850e1b","d58c8d9285dabe57","586cedf8dbd69715","1858640aa18ff821","6d79d13b6e060ac9","205f1f83a21d8416","ee8b1a637ec470ce","f974a3aa27f37a1c","ef541eb6d550cddf","f7a3730de54153c9","0a2bd784a0f77fe2","a06200e202435541","32a8862f09137e10","62c5ab9e80181dd4","bf1bb8f9c11a05db","49d7b487755e72cc","09942da612a83ccc","5c948164105aa295","2e75c8116b907652","1228352f881a6b84","8350dae85a395973","ba934bfdd28ff8e1","6513e9bcf4fe96c8","1a484133f02e5c98","50ee041c6c73cc0d","e712a21e8bdc868e","b50e92c72daf70be","c576bf04d4c608dd","8fb28c87ebfd35d8","0811cefeea4c898b","d17197a8c4ebf0c3","6aa4394608950444","f0475f6dbb413e80","d0288460e9e93809","0e44aff2df792d13","77f4a7e24127e4b9","ee133074c88e9907","feeb1e6f2a1257c7","2c3d46e788edc48d","ab0f78f182312947","fc73308e9d880f62","647ccc0bae33ca24","6e70f86a27cda911","472922ec0bd993dc","4bfeb13404265ac1","3b9ca7d2980e940d","f4e5b61e7548e77f","faddb649dc3fd459","0575aefac0f4b7bb","89b4fe676e04f8e2","ae16f9c3a914c78d","25f7737c6899b538","f88a68b630c0dca9","fb100b2a1917a651","f794b5e8084eb254","575a21961ffc9303","5f1a0a43c9f0b411","478ac1db762ef6ba","70079bada7009408","86ac62c524f2d884","6a92521f858abe20","29fe68f73337cc73","7c69058e0644b013","ff7698c81621350e","84de73321de093cf","76812df7d2a0fdb0","b9235f2158285655","7799647787ac60b6","c36d1f90fec9a6f7","ae22f03fcaa12c71","a89e90c66645b827","a2bdaf2c008fd463","824fbf9cfc58b075","a6cc7ae7cba049b8","3527366483f479ae","33afa4f20d57643d","b014d3b82e423745","10804f73b31e9adf","343faa13101368c7","549e9372bb3a8fe4","b0327085f40970ae","24dc5bbc126730e2","5607ee491314b3d0","1ffd6d87c98dc8b6","f8f4b9d6aafbc5a2","33459cc1252fac48","2d94995540d6c266","a8f894bd853620fc","a42849681d6dd260","3ddf077cf7e02033","89440c585d5c6993","75e1508a75a3ce4a","1f2389af90a5d628","0f5b7d474fb7ed01","7fec2401d5401d0d","2666e6822a601a5d","79bae2864bbd0771","9761f417b746d889","346d81e19acdab79","e93fa8283ae83c6b","983ef532c265a822","d6da1d273553fccb","47a0d4faed2839c7","b29da42569be44ad","c0e8d7a5384e982a","189cc64e0e595e66","803a1a5645375d31","7411c90c96779040","a18d7e3cd9638c3d","8c69d9676eea351d","67605e8a75604ae8","65193992124a8a46","1c989a03812c5eb6","d3fcc1d22a094404","b63ac7241909ebde","941bca27a4c69064","a0e6e2bf571c8bfc","3471e1159d4e2a24","9b48a523b0b32fc3","930fa4aa05df5ff8","6411a8105feec90d","3b647bbb40338d37","7e1042e4d32db58c","2c8c8e87e4f0e45a","746e4d25cb642feb","0f6cbeedf8d8704f","c19e8d46a939bb37","cdcc40d4514d098c","e3b7b347382083fa","7ef582f8d55a4435","832b4681afa645dc","214f932de9503c3f","3f2a65bc6e768aa7","ad3ddd1fcd60f190","3bbf65e07e82531c","6947c82fb7e31103","b1915e6012dfa6ca","0d8a34f194e15bc5","c6f7f0a7d9f75087","9c1768913210ef40","af804247abc82ffd","7ae07c2ee9393bec","9aaae6d896a03ce4","9e90e3c072c0362b","d98a55500be7fe80","dfb5bb10071bb094","18058c4c973ab4c4","d6a85fe1d1d9ba39","ee0139a4e229ad1d","963b3bf5cf7a0bf9","f02d1fdaee370b63","7cd635f76b9504d9","c0b5f3d435169fd3","422c8f23749f7435","fd5f874d1b9d8cb8","b4be754a115f8bda","2bb7d350f9f0c1ad","766bcf5e54327eab","e9d87c296b54968a","e0991fb8307ded4a","cef8ef4b4416ce2e","3d7a84dac52fe827","24f957cb1d0a0055","32a073743a9a429b","5f79b93678e926b3","8127dc5ea5d6315b","e5db2381e438b7c4","dc40901d59962c20","59d125f424597660","9d070135f11771fb","bb9c2c2bb0873da5","126769fd645ee96c","f4542214694b937b","ba13509807d65c13","d67a94518b759f19","520ae29e553b2dd2","6d4364f3e0bc7bdb","6b21e88a0d4925d4","fd0d44fb863c0464","378ccb56f5c32afd","49624a5da37cb7d8","d7f0be220925d6a7","50585ba88b828447","58a01a964ef3b6b6","7302509b1e688ef5","1df95c48d9b4c13d","45c6f1bd9ad7b816","263c5353833543ae","6cbe2c8aa998926a","0a23b45fb52ce691","959038bcc94fb548","64195cf1d982fa9b","8d064fd92cd2611d","a7b174ae9e5cd904"];
+          let bad = 0;
+          got.forEach((h, i) => { if (h !== GOLD[i]) { bad++; if (bad <= 10) console.error(`❌ ${i}-ҳолат ўзгарди:`, JSON.stringify(cases[i])); } });
+          if (bad) { console.error(`\n${bad} та ҳолатда ҳисоб натижаси олдингидан фарқ қилди. Ҳисоблаш мантиқи ўзгарган — атайлаб бўлмаса, ўзгаришни текширинг.`); process.exit(1); }
+          console.log(`✅ ${got.length} та ҳолатнинг барчасида ҳисоб натижаси ўзгармаган.`);
+          MJS
+          node hz-test.mjs www/index.html
+
+      - name: Loyiha tuzilmasini yaratish
+        run: |
+          sed -i "s/__TUHR_VERSION__/1.0.${{ github.run_number }}/" www/index.html
+          cat > package.json <<'JSON'
+          {
+            "name": "tuhr",
+            "version": "1.0.0",
+            "private": true,
+            "dependencies": {
+              "@capacitor/android": "^7.0.0",
+              "@capacitor/app": "^7.0.0",
+              "@capacitor/core": "^7.0.0",
+              "@capacitor/filesystem": "^7.0.0",
+              "@capacitor/haptics": "^7.0.0",
+              "@capacitor/local-notifications": "^7.0.0",
+              "@capacitor/share": "^7.0.0",
+              "@capacitor/splash-screen": "^7.0.0",
+              "@capacitor/status-bar": "^7.0.0"
+            },
+            "devDependencies": {
+              "@capacitor/assets": "^3.0.5",
+              "@capacitor/cli": "^7.0.0"
+            }
+          }
+          JSON
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "uz.tuhr.app",
+            "appName": "Туҳр",
+            "webDir": "www",
+            "server": { "androidScheme": "https" },
+            "android": { "backgroundColor": "#F5DDE5", "adjustMarginsForEdgeToEdge": "auto" },
+            "plugins": {
+              "SplashScreen": { "launchShowDuration": 1500, "launchAutoHide": true, "backgroundColor": "#F5DDE5", "showSpinner": false, "androidScaleType": "CENTER_CROP" },
+              "StatusBar": { "overlaysWebView": false, "style": "LIGHT", "backgroundColor": "#F5DDE5" },
+              "LocalNotifications": { "iconColor": "#A8264F" }
+            }
+          }
+          JSON
+          cat > bundle-fonts.mjs <<'MJS'
+          import { readFile, writeFile, mkdir } from 'node:fs/promises';
+          const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36';
+          const html = await readFile('www/index.html', 'utf8');
+          const m = html.match(/<link rel="stylesheet" href="(https:\/\/fonts\.googleapis\.com\/css2[^"]+)">/);
+          if (!m) { console.log('Shrift havolasi topilmadi.'); process.exit(0); }
+          const css = await (await fetch(m[1].replace(/&amp;/g, '&'), { headers: { 'User-Agent': UA } })).text();
+          await mkdir('www/fonts', { recursive: true });
+          const urls = [...new Set([...css.matchAll(/url\((https:\/\/[^)]+)\)/g)].map(x => x[1]))];
+          let out = css, n = 0;
+          for (const u of urls) {
+            const name = u.split('/').pop().split('?')[0];
+            const buf = Buffer.from(await (await fetch(u, { headers: { 'User-Agent': UA } })).arrayBuffer());
+            await writeFile('www/fonts/' + name, buf);
+            out = out.split(u).join(name);
+            n++;
+          }
+          await writeFile('www/fonts/fonts.css', out);
+          await writeFile('www/index.html', html.replace(m[0], '<link rel="stylesheet" href="fonts/fonts.css">'));
+          console.log('Joylashtirildi: ' + n + ' ta shrift fayli.');
+          MJS
+
+      - name: Kutubxonalarni ornatish
+        run: npm install --no-audit --no-fund
+
+      - name: Shriftlarni ilova ichiga joylash
+        continue-on-error: true
+        run: node bundle-fonts.mjs
+
+      - name: Android loyihasini yaratish
+        run: npx cap add android
+
+      - name: Ikonkalarni yasash
+        continue-on-error: true
+        run: npx @capacitor/assets generate --android --iconBackgroundColor '#F5DDE5' --iconBackgroundColorDark '#1A1017' --splashBackgroundColor '#F5DDE5' --splashBackgroundColorDark '#1A1017'
+
+      - name: Fayllarni koshirish
+        run: npx cap sync android
+
+      - name: Android 16 (API 36) ga moslash
+        run: |
+          V=android/variables.gradle
+          sed -i -E 's/compileSdkVersion = [0-9]+/compileSdkVersion = 36/; s/targetSdkVersion = [0-9]+/targetSdkVersion = 36/' $V
+          echo "android.suppressUnsupportedCompileSdk=36" >> android/gradle.properties
+          grep -n 'SdkVersion' $V
+
+      - name: Versiya raqamini qo'yish
+        run: |
+          G=android/app/build.gradle
+          sed -i "s/versionCode 1$/versionCode ${{ github.run_number }}/" $G
+          sed -i "s/versionName \"1.0\"/versionName \"1.0.${{ github.run_number }}\"/" $G
+          printf '\nandroid {\n    lint {\n        checkReleaseBuilds false\n        abortOnError false\n    }\n}\n' >> $G
+          grep -n 'versionCode\|versionName' $G
+
+      - name: Kalit borligini tekshirish
+        env:
+          KS: ${{ secrets.TUHR_KEYSTORE_B64 }}
+          PW: ${{ secrets.TUHR_KEYSTORE_PASS }}
+        run: |
+          if [ -z "$KS" ] || [ -z "$PW" ]; then
+            echo "::error::TUHR_KEYSTORE_B64 yoki TUHR_KEYSTORE_PASS maxfiy qiymati topilmadi (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      - name: APK va AAB yigish
+        run: |
+          chmod +x android/gradlew
+          cd android && ./gradlew assembleRelease bundleRelease --no-daemon
+
+      - name: Doimiy kalit bilan imzolash
+        env:
+          KS: ${{ secrets.TUHR_KEYSTORE_B64 }}
+          PW: ${{ secrets.TUHR_KEYSTORE_PASS }}
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT="$SDK/build-tools/$(ls "$SDK/build-tools" | sort -V | tail -1)"
+          echo "$KS" | base64 -d > "$RUNNER_TEMP/tuhr.jks"
+          V="1.0.${{ github.run_number }}"
+          "$BT/zipalign" -p -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/tuhr.jks" --ks-key-alias tuhr --ks-pass env:PW --key-pass env:PW --out "tuhr-$V.apk" aligned.apk
+          "$BT/apksigner" verify --print-certs "tuhr-$V.apk"
+          jarsigner -keystore "$RUNNER_TEMP/tuhr.jks" -storepass "$PW" -keypass "$PW" -sigalg SHA256withRSA -digestalg SHA-256 \
+            -signedjar "tuhr-$V.aab" android/app/build/outputs/bundle/release/app-release.aab tuhr
+          rm -f "$RUNNER_TEMP/tuhr.jks" aligned.apk
+          ls -la tuhr-*
+
+      - name: APK ni Releases'ga joylash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="1.0.${{ github.run_number }}"
+          gh release create "v$V" "tuhr-$V.apk" --title "Туҳр $V" \
+            --notes "Yuklab olish: pastdagi tuhr-$V.apk faylini bosing. Eski versiya ustidan o'rnatiladi, ma'lumotlar saqlanib qoladi."
+
+      - name: Fayllarni saqlash
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuhr-1.0.${{ github.run_number }}
+          path: |
+            tuhr-*.apk
+            tuhr-*.aab
+          if-no-files-found: error
