@@ -197,6 +197,13 @@ jobs:
       - name: Fayllarni koshirish
         run: npx cap sync android
 
+      - name: Joylashuv ruxsatini qo'shish
+        run: |
+          # Namoz vaqtlarini joylashuv bo'yicha aniqlash uchun; ruxsat faqat foydalanuvchi tugmani bosganda so'raladi
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's#</manifest>#    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n</manifest>#' "$M"
+          grep -n 'LOCATION' "$M"
+
       - name: Android 16 (API 36) ga moslash
         run: |
           V=android/variables.gradle
