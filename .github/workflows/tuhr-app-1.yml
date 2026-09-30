@@ -229,10 +229,36 @@ jobs:
             exit 1
           fi
 
-      - name: APK va AAB yigish
+      - name: APK yigish (GitHub uchun)
         run: |
           chmod +x android/gradlew
-          cd android && ./gradlew assembleRelease bundleRelease --no-daemon
+          cd android && ./gradlew assembleRelease --no-daemon
+
+      - name: Play versiyasidan GitHub yangilanish xabarini olib tashlash
+        run: |
+          # Google Play qoidasiga ko'ra Play'dagi ilova o'zini tashqaridan (APK yuklab) yangilashni taklif qilmasligi kerak.
+          # Shu sababli AAB ichidagi nusxada «Янги версия чиқди» xabari va «Янгиланишни текшириш» tugmasi o'chiriladi.
+          # APK (GitHub Releases) avvalgidek qoladi.
+          cat > play-patch.mjs <<'MJS'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const f = 'android/app/src/main/assets/public/index.html';
+          let h = readFileSync(f, 'utf8');
+          const swaps = [
+            ['async function checkUpdate(manual){', 'async function checkUpdate(manual){ return null;'],
+            ["${/^\\d/.test(TUHR_VERSION)?'<div class=\"tzbtns\"><button class=\"btn\" type=\"button\" id=\"tzUpd\">Янгиланишни текшириш</button></div>':''}", ''],
+          ];
+          for (const [a, b] of swaps) {
+            if (!h.includes(a)) { console.error('::error::Play uchun o\'zgartiriladigan joy topilmadi: ' + a.slice(0, 60)); process.exit(1); }
+            h = h.split(a).join(b);
+          }
+          writeFileSync(f, h);
+          console.log('Play nusxasi tayyor: yangilanish xabari o\'chirildi.');
+          MJS
+          node play-patch.mjs
+
+      - name: AAB yigish (Google Play uchun)
+        run: |
+          cd android && ./gradlew bundleRelease --no-daemon
 
       - name: Doimiy kalit bilan imzolash
         env:
