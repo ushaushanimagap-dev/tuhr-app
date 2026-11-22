@@ -21,6 +21,12 @@ for (const [a, b] of required) {
   if (!h.includes(a)) { console.error("::error::iOS uchun o'zgartiriladigan joy topilmadi: " + a.slice(0, 60)); process.exit(1); }
   h = h.split(a).join(b);
 }
+// «Савол» sahifasidagi «Веб-версияда сўраш» kartasi (tashqi claude.ai havolasi) iOS nusxasidan butunlay olib tashlanadi.
+// Karta <div class="card oqweb"> ... </div> bitta blok; undan keyin shablon qatori (`;) davom etadi.
+const webCard = /\n[ \t]*<div class="card oqweb">[\s\S]*?<\/a><\/div>(?=`;)/;
+if (!webCard.test(h)) { console.error("::error::iOS uchun «Веб-версияда сўраш» kartasi topilmadi"); process.exit(1); }
+h = h.replace(webCard, '');
+
 for (const [a, b] of optional) {
   if (h.includes(a)) h = h.split(a).join(b);
   else console.log("::warning::Ixtiyoriy matn topilmadi (o'zgartirilmadi): " + a.slice(0, 40));
@@ -36,6 +42,12 @@ if (bad.length) {
   bad.slice(0, 10).forEach(s => console.error('  ' + s.slice(0, 160)));
   process.exit(1);
 }
+
+// Tekshiruv: claude.ai havolasi va «Веб-версияда сўраш» matni qolmasligi kerak.
+const leftovers = [];
+if (/https?:\/\/(?:[\w-]+\.)*claude\.ai/i.test(h)) leftovers.push('claude.ai havolasi');
+if (/Веб-версияда сўраш|Veb-versiyada so['ʻ‘’`]?rash/i.test(h)) leftovers.push('«Веб-версияда сўраш» matni');
+if (leftovers.length) { console.error('::error::iOS nusxasida qoldi: ' + leftovers.join(', ')); process.exit(1); }
 
 writeFileSync(f, h);
 console.log("iOS nusxasi tayyor: yangilanish xabari o'chirildi, Android/Play matnlari yo'q.");
