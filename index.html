@@ -995,6 +995,70 @@ body.opening-on{overflow:hidden}
   </div>
   <p class="skip">Давом этиш учун босинг</p>
 </div>
+<script id="tuhr-store-js">
+/* ================= ДОИМИЙ САҚЛАШ: маълумотларнинг телефон хотирасидаги нусхаси (фақат APK) =================
+   Android WebView localStorage'ни баъзан ўзи тозалаб юборади. Шу сабабли hayz-* калитлари Capacitor Preferences'га
+   ҳам ёзиб борилади; ишга тушишда localStorage бўш бўлса, маълумотлар ўша ердан қайта тикланади.
+   Браузерда (Capacitor йўқ) ҳеч нарса қилмайди. Ҳисоблаш мантиқига тегмайди. Хато бўлса — дастур ишлашда давом этади. */
+(function(){
+var C=window.Capacitor, P=null;
+try{ if(C&&C.isNativePlatform&&C.isNativePlatform()&&C.Plugins&&C.Plugins.Preferences) P=C.Plugins.Preferences; }catch(e){}
+if(!P) return;
+var LSO=null; try{ LSO=window.localStorage; }catch(e){}
+if(!LSO) return;
+var MAIN='hayz-kd-v1', GUARD='tuhr-prefs-restore', NOREST='tuhr-prefs-norestore';
+var mirr=function(k){ return typeof k==='string'&&/^hayz-/.test(k)&&!/^hayz-upd-/.test(k)&&k!=='hayz-kd-v1-t'; };
+var SS=function(){ try{ return window.sessionStorage; }catch(e){ return null; } };
+var ssGet=function(k){ try{ var s=SS(); return s?s.getItem(k):null; }catch(e){ return null; } };
+var ssSet=function(k,v){ try{ var s=SS(); if(s){ if(v==null) s.removeItem(k); else s.setItem(k,v); } }catch(e){} };
+var SP=Storage.prototype, si=SP.setItem, ri=SP.removeItem, cl=SP.clear;
+var lsKeys=function(){ var a=[]; try{ for(var i=0;i<LSO.length;i++){ var k=LSO.key(i); if(mirr(k)) a.push(k); } }catch(e){} return a; };
+var pKeys=function(){ return Promise.resolve(P.keys()).then(function(r){ return ((r&&r.keys)||[]).filter(mirr); }); };
+var pSet=function(k,v){ return P.set({key:k,value:v}); }, pDel=function(k){ return P.remove({key:k}); };
+var dead=false, chain;
+/* ҳамма Preferences амаллари навбат билан, бирин-кетин бажарилади; ишга тушишдаги текширув — навбатда биринчи */
+function q(fn){ chain=chain.then(function(){ if(!dead) return fn(); }).catch(function(){}); return chain; }
+
+function boot(){
+  var skip=!!ssGet(NOREST); if(skip) ssSet(NOREST,null);            // «PIN-кодни унутдим» дан кейин қайта тикланмайди
+  var has=false; try{ has=LSO.getItem(MAIN)!=null; }catch(e){ return; }
+  if(has) ssSet(GUARD,null);
+  return pKeys().then(function(pk){
+    if(skip) return Promise.all(pk.filter(function(k){ return LSO.getItem(k)==null; }).map(pDel));
+    if(!has&&pk.indexOf(MAIN)>=0){
+      if(ssGet(GUARD)){ dead=true; return; }                         // бир марта уринилди — қайта юкламаймиз ва нусхани бузмаймиз
+      return Promise.all(pk.map(function(k){ return Promise.resolve(P.get({key:k})).then(function(r){ return [k,r&&r.value]; }); })).then(function(kv){
+        var ok=false;
+        kv.forEach(function(x){ if(typeof x[1]==='string') try{ si.call(LSO,x[0],x[1]); if(x[0]===MAIN) ok=true; }catch(e){} });
+        if(ok){ dead=true; ssSet(GUARD,'1'); location.reload(); }
+      });
+    }
+    if(!pk.length||(has&&pk.indexOf(MAIN)<0)) return Promise.all(lsKeys().map(function(k){ var v=LSO.getItem(k); return v==null?null:pSet(k,v); }));   // биринчи марта (ёки асосий калит нусхада йўқ бўлса): тўлиқ нусха
+  });
+}
+chain=(function(){ try{ return Promise.resolve(boot()); }catch(e){ return Promise.resolve(); } })().catch(function(){});   // localStorage ҳозирги ҳолати дарҳол текширилади
+
+var isLS=function(s){ return s===LSO; };
+try{
+  SP.setItem=function(k,v){ var r=si.apply(this,arguments);
+    try{ if(isLS(this)){ var key=String(k), val=String(v); if(mirr(key)) q(function(){ return pSet(key,val); }); } }catch(e){} return r; };
+  SP.removeItem=function(k){ var r=ri.apply(this,arguments);
+    try{ if(isLS(this)){ var key=String(k); if(mirr(key)) q(function(){ return pDel(key); }); } }catch(e){} return r; };
+  SP.clear=function(){ var r=cl.apply(this,arguments);
+    try{ if(isLS(this)) q(function(){ return pKeys().then(function(ks){ return Promise.all(ks.map(pDel)); }); }); }catch(e){} return r; };
+}catch(e){}
+
+/* навбатдаги амаллар тугашини кутиш (энг кўпи ms) */
+function flush(ms){ return new Promise(function(res){ var t=setTimeout(res,ms||2000); chain.then(function(){ clearTimeout(t); res(); }); }); }
+window.TuhrPrefs={
+  flush:flush,
+  /* keep(k) true бўлган калитлардан бошқа барча hayz-* калитларини Preferences'дан ўчиради */
+  wipe:function(keep){ ssSet(NOREST,'1');
+    q(function(){ return pKeys().then(function(ks){ return Promise.all(ks.filter(function(k){ return !(keep&&keep(k)); }).map(pDel)); }); });
+    return flush(); }
+};
+})();
+</script>
 <script id="tuhr-opening-js">
 (function(){
 const O=document.getElementById('opening'); if(!O) return;
@@ -3620,7 +3684,8 @@ function lockUI(mode,cb){
     busy=false; }
   el.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b||busy) return;
     if(b.classList.contains('lkforgot')){ if(confirm(L('PIN-кодни тиклаб бўлмайди. Қулфни олиб ташлаш учун дастурдаги БАРЧА маълумотлар ўчирилади. Давом этилсинми?','PIN-kodni tiklab boʻlmaydi. Qulfni olib tashlash uchun dasturdagi BARCHA maʼlumotlar oʻchiriladi. Davom etilsinmi?'))){
-        try{ Object.keys(localStorage).filter(k=>/^hayz-/.test(k)&&k!=='hayz-script'&&k!=='hayz-skin'&&k!=='hayz-theme').forEach(k=>localStorage.removeItem(k)); }catch(err){} location.reload(); } return; }
+        try{ Object.keys(localStorage).filter(k=>/^hayz-/.test(k)&&k!=='hayz-script'&&k!=='hayz-skin'&&k!=='hayz-theme').forEach(k=>localStorage.removeItem(k)); }catch(err){}
+        const go=()=>location.reload(); if(window.TuhrPrefs) TuhrPrefs.wipe(k=>k==='hayz-script'||k==='hayz-skin'||k==='hayz-theme').then(go,go); else go(); } return; }
     if(b.dataset.x==='b'){ v=v.slice(0,-1); paint(); return; }
     if(b.dataset.x==='c'){ if(mode!=='unlock') close(false); return; }
     if(b.dataset.d!=null&&v.length<4){ v+=b.dataset.d; paint(); if(v.length===4) setTimeout(full,120); } });
@@ -4368,7 +4433,8 @@ function build(){
     if(!confirm(LAT('Тақвимдаги барча маълумотлар ўчирилади. Давом этилсинми?'))) return;
     TuhrKdWipe(); msg('Тақвимдаги маълумотлар ўчирилди.');
     /* тоза ҳолатда бошидан очилади: бош саҳифа ва рўйхатдан ўтиш ойнаси */
-    setTimeout(()=>{ try{ history.replaceState(null,'',location.pathname+location.search+'#bosh'); }catch(e){} location.reload(); },350); };
+    setTimeout(()=>{ try{ history.replaceState(null,'',location.pathname+location.search+'#bosh'); }catch(e){}
+      const go=()=>location.reload(); if(window.TuhrPrefs) TuhrPrefs.flush().then(go,go); else go(); },350); };
   mo=new MutationObserver(()=>{ place(); mo.takeRecords(); });
   mo.observe(host,{childList:true});
 }
