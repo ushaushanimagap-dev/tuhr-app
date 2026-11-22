@@ -1,0 +1,11 @@
+{
+  "appId": "uz.tuhr.app",
+  "appName": "Туҳр",
+  "webDir": "www",
+  "ios": { "backgroundColor": "#F5DDE5", "contentInset": "never" },
+  "plugins": {
+    "SplashScreen": { "launchShowDuration": 1500, "launchAutoHide": true, "backgroundColor": "#F5DDE5", "showSpinner": false },
+    "StatusBar": { "style": "LIGHT" },
+    "LocalNotifications": { "iconColor": "#A8264F" }
+  }
+}

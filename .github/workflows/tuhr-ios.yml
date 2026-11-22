@@ -1,0 +1,210 @@
+name: Tuhr iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ ios ]
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Samarkand
+
+jobs:
+  # 1) Veb-sahifani tayyorlash (Android yig'ishdagi bilan bir xil qadamlar) va kalitlar borligini aniqlash
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      build: ${{ steps.ver.outputs.build }}
+      signing: ${{ steps.keys.outputs.signing }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Versiya
+        id: ver
+        run: |
+          echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "Versiya: 1.0.${{ github.run_number }} (build ${{ github.run_number }})"
+
+      - name: Sahifani olish
+        run: |
+          mkdir -p www
+          cp index.html www/index.html
+
+      - name: Android yig'ishdagi skriptlarni olish (bitta manba)
+        run: |
+          # hz-test.mjs (oltin namunalar) va bundle-fonts.mjs tuhr-app-1.yml ichidan olinadi —
+          # namunalar yangilansa, iOS yig'ish ham avtomatik yangisidan foydalanadi.
+          extract(){ awk -v f="$1" 'index($0, "cat > " f " <<")>0 {on=1; next} on && $0 ~ /^ *MJS *$/ {exit} on {sub(/^          /,""); print}' .github/workflows/tuhr-app-1.yml > "$1"; }
+          extract hz-test.mjs
+          extract bundle-fonts.mjs
+          grep -q 'const GOLD' hz-test.mjs || { echo "::error::hz-test.mjs tuhr-app-1.yml dan olinmadi"; exit 1; }
+          grep -q 'fonts.css' bundle-fonts.mjs || { echo "::error::bundle-fonts.mjs tuhr-app-1.yml dan olinmadi"; exit 1; }
+          wc -l hz-test.mjs bundle-fonts.mjs
+
+      - name: Hisoblash mantiqini tekshirish
+        run: node hz-test.mjs www/index.html
+
+      - name: Versiya va App Store moslashuvi
+        run: |
+          sed -i "s/__TUHR_VERSION__/${{ steps.ver.outputs.version }}/" www/index.html
+          node .github/ios/ios-patch.mjs www/index.html
+
+      - name: Shriftlarni ilova ichiga joylash
+        continue-on-error: true
+        run: node bundle-fonts.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: www
+          path: www
+          if-no-files-found: error
+
+      - name: App Store kalitlari borligini tekshirish
+        id: keys
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=""
+          for k in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do [ -n "${!k}" ] || missing="$missing $k"; done
+          if [ -n "$missing" ]; then
+            echo "signing=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=App Store yuklash o'tkazib yuborildi::Maxfiy qiymatlar yo'q:$missing. Faqat simulyator yig'ish bajariladi."
+          else
+            echo "signing=true" >> "$GITHUB_OUTPUT"
+            echo "Barcha kalitlar bor — imzolangan yig'ish App Store Connect'ga yuklanadi."
+          fi
+
+  # 2) Imzosiz, iOS Simulator uchun yig'ish — loyiha kompilyatsiya bo'lishini isbotlaydi
+  simulator:
+    needs: prep
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: www
+          path: www
+
+      - name: iOS loyihasini yaratish va sozlash
+        run: bash .github/ios/prepare.sh "${{ needs.prep.outputs.version }}" "${{ needs.prep.outputs.build }}"
+
+      - name: Simulyator uchun yig'ish (imzosiz)
+        run: |
+          if ! xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Release \
+                 -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+                 -derivedDataPath build CODE_SIGNING_ALLOWED=NO build > xcodebuild.log 2>&1; then
+            grep -E 'error:' xcodebuild.log | head -40; tail -60 xcodebuild.log
+            echo "::error::Simulyator yig'ish muvaffaqiyatsiz"; exit 1
+          fi
+          grep -E '^\*\* ' xcodebuild.log
+          APP=build/Build/Products/Release-iphonesimulator/App.app
+          [ -d "$APP" ] || { echo "::error::App.app yaratilmadi"; tail -80 xcodebuild.log; exit 1; }
+          plutil -p "$APP/Info.plist" | grep -E 'CFBundle(DisplayName|Identifier|ShortVersionString|Version)|ITSApp|NSLocation'
+          ls "$APP/public" | head
+          ditto -c -k --keepParent "$APP" "Tuhr-${{ needs.prep.outputs.version }}-simulator.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tuhr-ios-simulator-${{ needs.prep.outputs.version }}
+          path: Tuhr-*-simulator.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log-simulator
+          path: xcodebuild.log
+          if-no-files-found: ignore
+
+  # 3) Imzolangan yig'ish va App Store Connect / TestFlight'ga yuklash (faqat kalitlar bo'lsa)
+  appstore:
+    needs: [prep, simulator]
+    if: needs.prep.outputs.signing == 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: www
+          path: www
+
+      - name: iOS loyihasini yaratish va sozlash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash .github/ios/prepare.sh "${{ needs.prep.outputs.version }}" "${{ needs.prep.outputs.build }}" "$APPLE_TEAM_ID"
+
+      - name: App Store Connect API kaliti
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8"
+          grep -q 'BEGIN PRIVATE KEY' "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" || { echo "::error::ASC_KEY_P8 .p8 fayl matni emas (BEGIN PRIVATE KEY qatori yo'q)"; exit 1; }
+
+      - name: Arxivlash (imzolangan)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          if ! xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Release \
+                 -destination 'generic/platform=iOS' -archivePath build/Tuhr.xcarchive "${AUTH[@]}" archive > archive.log 2>&1; then
+            grep -E 'error:' archive.log | head -20
+            # Jamoada ro'yxatdan o'tgan qurilma bo'lmasa, development profil yaratilmaydi.
+            # Unda arxiv imzosiz olinadi; imzoni eksport bosqichi (App Store distribution) qo'yadi.
+            echo "::warning::Imzolangan arxiv bo'lmadi — imzosiz arxivlab, eksportda imzolanadi."
+            rm -rf build/Tuhr.xcarchive
+            xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Release \
+              -destination 'generic/platform=iOS' -archivePath build/Tuhr.xcarchive \
+              CODE_SIGNING_ALLOWED=NO archive > archive2.log 2>&1 || { grep -E 'error:' archive2.log | head -40; tail -40 archive2.log; exit 1; }
+          fi
+          [ -d build/Tuhr.xcarchive ] || { echo "::error::Arxiv yaratilmadi"; exit 1; }
+
+      - name: App Store Connect'ga yuklash (TestFlight)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -o pipefail
+          sed "s/__TEAM_ID__/$APPLE_TEAM_ID/" .github/ios/ExportOptions.plist > "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive -archivePath build/Tuhr.xcarchive \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -exportPath build/export \
+            -allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee export.log
+          echo "Yuklandi: Туҳр ${{ needs.prep.outputs.version }} (build ${{ needs.prep.outputs.build }}). App Store Connect > TestFlight'da 10–30 daqiqada ko'rinadi."
+
+      - name: Kalitni o'chirish
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xcodebuild-logs-appstore
+          path: |
+            archive*.log
+            export.log
+          if-no-files-found: ignore
