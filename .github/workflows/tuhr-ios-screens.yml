@@ -1,0 +1,164 @@
+name: Tuhr iOS screenshots
+
+# App Store uchun skrinshotlar (6.9" iPhone). Faqat qo'lda ishga tushiriladi.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Samarkand
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Sahifani tayyorlash (iOS nusxasi + skrinshot skriptlari)
+        run: |
+          mkdir -p www
+          cp index.html www/index.html
+          sed -i "s/__TUHR_VERSION__/1.0.0/" www/index.html
+          node .github/ios/ios-patch.mjs www/index.html
+          extract(){ awk -v f="$1" 'index($0, "cat > " f " <<")>0 {on=1; next} on && $0 ~ /^ *MJS *$/ {exit} on {sub(/^          /,""); print}' .github/workflows/tuhr-app-1.yml > "$1"; }
+          extract bundle-fonts.mjs
+          node bundle-fonts.mjs || echo "::warning::bundle-fonts ishlamadi"
+          node .github/ios/screens-inject.mjs www/index.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: www-screens
+          path: www
+          if-no-files-found: error
+
+  screens:
+    needs: prep
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: www-screens
+          path: www
+
+      - name: iOS loyihasini yaratish va sozlash
+        run: bash .github/ios/prepare.sh "1.0.0" "1"
+
+      - name: Simulyator uchun yig'ish (imzosiz)
+        run: |
+          if ! xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Release \
+                 -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+                 -derivedDataPath build CODE_SIGNING_ALLOWED=NO build > xcodebuild.log 2>&1; then
+            grep -E 'error:' xcodebuild.log | head -40; tail -60 xcodebuild.log
+            echo "::error::Simulyator yig'ish muvaffaqiyatsiz"; exit 1
+          fi
+          [ -d build/Build/Products/Release-iphonesimulator/App.app ] || { echo "::error::App.app yo'q"; exit 1; }
+
+      - name: Simulyatorni tanlash va yoqish
+        run: |
+          xcrun simctl list devices available | grep -E 'iPhone' || true
+          UDID=$(xcrun simctl list devices available | grep -E 'iPhone 17 Pro Max \(' | head -1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
+          if [ -z "$UDID" ]; then
+            UDID=$(xcrun simctl list devices available | grep -E 'Pro Max \(' | tail -1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
+          fi
+          if [ -z "$UDID" ]; then
+            RT=$(xcrun simctl list runtimes available | grep -E 'iOS' | tail -1 | sed -E 's/.* - (com\.apple[^ ]+)$/\1/')
+            DT=$(xcrun simctl list devicetypes | grep -E 'Pro Max' | tail -1 | sed -E 's/.*\((com\.apple[^)]+)\)$/\1/')
+            echo "yangi simulyator: $DT / $RT"
+            UDID=$(xcrun simctl create "Tuhr-ProMax" "$DT" "$RT")
+          fi
+          [ -n "$UDID" ] || { echo "::error::6.9 dyuymli simulyator topilmadi"; exit 1; }
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl list devices | grep "$UDID"
+          xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 --cellularMode active --cellularBars 4 --wifiBars 3 || true
+
+      - name: Ilovani o'rnatish, ishga tushirish va suratga olish
+        run: |
+          set -u
+          APP=build/Build/Products/Release-iphonesimulator/App.app
+          BID=uz.tuhr.app
+          mkdir -p shots
+          xcrun simctl privacy "$UDID" grant location "$BID" || true
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" "$BID"
+          DATA=$(xcrun simctl get_app_container "$UDID" "$BID" data)
+          TRACE="$DATA/Documents/trace.txt"
+          echo "trace: $TRACE"
+          LAST=-1; N=0; START=$(date +%s)
+          NAMES=(1-bugun 2-taqvim 3-hukm-natijasi 4-dars 5-savol-javob 6-sozlamalar)
+          while [ $(( $(date +%s) - START )) -lt 150 ]; do
+            sleep 0.5
+            [ -f "$TRACE" ] || continue
+            L=$(cat "$TRACE")
+            case "$L" in [0-9]*)
+              IDX=${L%%|*}
+              if [ "$IDX" -gt "$LAST" ]; then
+                LAST=$IDX
+                xcrun simctl io "$UDID" screenshot --type=png "shots/${NAMES[$IDX]}.png"
+                echo "[$(( $(date +%s) - START ))s] $L"
+                N=$((N+1))
+              fi
+              ;;
+              "done") break;;
+            esac
+          done
+          echo "olingan surat: $N"
+          echo "--- trace oxiri:"; cat "$TRACE" 2>/dev/null || echo "(trace yo'q)"; echo
+          if [ "$N" -lt 6 ]; then
+            echo "::warning::Trace bo'yicha ${N} ta surat olindi"
+          fi
+
+      - name: Skrinshotlarni tekshirish (o'lcham, takrorlanmaslik)
+        run: |
+          ls -la shots
+          [ "$(ls shots/*.png 2>/dev/null | wc -l)" -ge 5 ] || { echo "::error::5 tadan kam skrinshot"; exit 1; }
+          FAIL=0
+          for f in shots/*.png; do
+            W=$(sips -g pixelWidth "$f" | awk '/pixelWidth/{print $2}'); H=$(sips -g pixelHeight "$f" | awk '/pixelHeight/{print $2}')
+            A=$(sips -g hasAlpha "$f" | awk '/hasAlpha/{print $2}')
+            echo "$f ${W}x${H} alpha=$A bytes=$(stat -f%z "$f") md5=$(md5 -q "$f")"
+            if [ "$W" != "1320" ] || [ "$H" != "2868" ]; then
+              if [ "$W" != "1290" ] || [ "$H" != "2796" ]; then echo "::error::$f noto'g'ri o'lcham ${W}x${H}"; FAIL=1; fi
+            fi
+          done
+          UNIQ=$(md5 -q shots/*.png | sort -u | wc -l | tr -d ' '); TOT=$(ls shots/*.png | wc -l | tr -d ' ')
+          echo "noyob suratlar: $UNIQ / $TOT"
+          [ "$UNIQ" = "$TOT" ] || { echo "::error::Ba'zi skrinshotlar bir xil (ekran almashmagan)"; FAIL=1; }
+          # alpha kanali App Store uchun muammo emas, lekin yo'qligi ma'qul: JPEG orqali o'tkazib olib tashlanadi
+          mkdir -p out
+          for f in shots/*.png; do
+            sips -s format jpeg -s formatOptions 100 "$f" --out "$RUNNER_TEMP/t.jpg" >/dev/null
+            sips -s format png "$RUNNER_TEMP/t.jpg" --out "out/$(basename "$f")" >/dev/null
+            echo "out/$(basename "$f"): $(sips -g pixelWidth -g pixelHeight -g hasAlpha "out/$(basename "$f")" | tr '\n' ' ')"
+          done
+          [ "$FAIL" = 0 ] || exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: appstore-screenshots
+          path: out/*.png
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: appstore-screenshots-raw
+          path: shots/*.png
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log-screens
+          path: xcodebuild.log
+          if-no-files-found: ignore
