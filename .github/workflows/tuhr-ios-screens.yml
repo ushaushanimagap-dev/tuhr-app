@@ -102,7 +102,7 @@ jobs:
           echo "trace: $TRACE"
           LAST=-1; N=0; START=$(date +%s)
           NAMES=(1-bugun 2-taqvim 3-hukm-natijasi 4-dars 5-savol-javob 6-sozlamalar)
-          while [ $(( $(date +%s) - START )) -lt 150 ]; do
+          while [ $(( $(date +%s) - START )) -lt 400 ]; do
             sleep 0.5
             [ -f "$TRACE" ] || continue
             L=$(cat "$TRACE")

@@ -35,9 +35,12 @@ function trace(s){ try{ if(FS) return FS.writeFile({path:'trace.txt',data:s,dire
 var sleep=function(ms){return new Promise(function(r){setTimeout(r,ms);});};
 (async function(){
  trace('boot');
- await sleep(8000);
+ await sleep(6000);
+ var op=document.getElementById('opening'); if(op){ try{ op.click(); }catch(e){} }
+ await sleep(4000);
  for(var i=0;i<STEPS.length;i++){
   var st=STEPS[i];
+  var op2=document.getElementById('opening'); if(op2){ try{ op2.click(); }catch(e){} await sleep(2500); }
   location.hash=st[0];
   await sleep(1500);
   try{
@@ -48,7 +51,7 @@ var sleep=function(ms){return new Promise(function(r){setTimeout(r,ms);});};
   var h2=document.querySelector('.panel:not([hidden]) h2');
   var info=[i,st[0],document.body.dataset.tab,(h2&&h2.textContent)||'',!!document.getElementById('opening'),!!document.getElementById('onb'),!!document.getElementById('tuhrTour'),!!document.getElementById('tuhrLock'),scrollY|0].join('|');
   await trace(info);
-  await sleep(6500);
+  await sleep(28000);
  }
  trace('done');
 })();
