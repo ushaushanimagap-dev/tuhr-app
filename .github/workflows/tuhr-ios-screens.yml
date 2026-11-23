@@ -3,6 +3,13 @@ name: Tuhr iOS screenshots
 # App Store uchun skrinshotlar (6.9" iPhone). Faqat qo'lda ishga tushiriladi.
 on:
   workflow_dispatch:
+  # Asosiy shoxda bo'lmagan qo'lda ishga tushiriladigan ish jarayoni push orqali bir marta tanishtirilishi kerak;
+  # shuning uchun faqat shu fayllar o'zgarganda ishlaydi.
+  push:
+    branches: [ ios ]
+    paths:
+      - .github/workflows/tuhr-ios-screens.yml
+      - .github/ios/screens-inject.mjs
 
 permissions:
   contents: read
